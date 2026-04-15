@@ -1,5 +1,16 @@
+use std::net::TcpListener;
+
 fn main() {
-    println!("Hello, world!");
-    let mut x = 5;
-    let y = 10;
+    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(_stream) => {
+                println!("Server spawned");
+            }
+            Err(e) => {
+                println!("error: {}", e);
+            }
+        }
+    }
 }
