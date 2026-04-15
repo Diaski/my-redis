@@ -1,16 +1,7 @@
-use std::net::TcpListener;
+use my_redis::server::App;
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(_stream) => {
-                println!("Server spawned");
-            }
-            Err(e) => {
-                println!("error: {}", e);
-            }
-        }
-    }
+#[tokio::main]
+async fn main() {
+    let app: App = App::new("127.0.0.1:6379".to_string()).await;
+    app.run().await;
 }
