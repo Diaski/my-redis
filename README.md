@@ -12,7 +12,7 @@ A Redis-compatible server written in Rust, built as a learning project.
 ## Getting Started
 
 ```bash
-git clone https://github.com/yourusername/my-redis
+git clone https://github.com/Diaski/my-redis.git
 cd my-redis
 cargo run --release
 ```
