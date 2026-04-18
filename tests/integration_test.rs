@@ -1,9 +1,8 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-
 async fn spawn_test_server() -> std::net::SocketAddr {
-    let app = my_redis::server::App::new("127.0.0.1:0".to_string()).await;
-    let addr = app.listener.local_addr().unwrap();
+    let app = my_redis::server::App::new("127.0.0.1:0".to_string()).await.unwrap();
+    let addr = app.local_addr();
     tokio::spawn(async move {
         app.run().await;
     });
@@ -46,7 +45,7 @@ async fn test_get_existing_key() {
 
     stream.write_all(b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n").await.unwrap();
     let mut buf = [0u8; 64];
-    stream.read(&mut buf).await.unwrap();
+    _ = stream.read(&mut buf).await;
 
     stream.write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n").await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();
@@ -69,10 +68,10 @@ async fn test_set_overwrite_key() {
     let mut buf = [0u8; 64];
 
     stream.write_all(b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n").await.unwrap();
-    stream.read(&mut buf).await.unwrap();
+    _ = stream.read(&mut buf).await.unwrap();
 
     stream.write_all(b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbaz\r\n").await.unwrap();
-    stream.read(&mut buf).await.unwrap();
+    _ = stream.read(&mut buf).await.unwrap();
 
     stream.write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n").await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();
@@ -88,7 +87,7 @@ async fn test_del_existing_key() {
     let mut buf = [0u8; 64];
 
     stream.write_all(b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n").await.unwrap();
-    stream.read(&mut buf).await.unwrap();
+    _ = stream.read(&mut buf).await.unwrap();
 
     stream.write_all(b"*2\r\n$3\r\nDEL\r\n$3\r\nfoo\r\n").await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();
@@ -110,7 +109,7 @@ async fn test_exists_returns_one_when_key_present() {
     let mut buf = [0u8; 64];
 
     stream.write_all(b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n").await.unwrap();
-    stream.read(&mut buf).await.unwrap();
+    _ = stream.read(&mut buf).await.unwrap();
 
     stream.write_all(b"*2\r\n$6\r\nEXISTS\r\n$3\r\nfoo\r\n").await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();
@@ -146,10 +145,10 @@ async fn test_multiple_keys_are_independent() {
     let mut buf = [0u8; 64];
 
     stream.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n").await.unwrap();
-    stream.read(&mut buf).await.unwrap();
+    _ = stream.read(&mut buf).await.unwrap();
 
     stream.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n").await.unwrap();
-    stream.read(&mut buf).await.unwrap();
+    _ = stream.read(&mut buf).await.unwrap();
 
     stream.write_all(b"*2\r\n$3\r\nGET\r\n$1\r\na\r\n").await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();

@@ -9,7 +9,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = false
-debug= true
+debug= false
 
 [profile.test]
 opt-level = 0
@@ -21,3 +21,5 @@ debug = true
 
 [dependencies]
 tokio = { version = "1.52.0", features = ["full"] }
+dashmap = "6"
+bytes = "1"
