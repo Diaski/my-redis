@@ -36,8 +36,6 @@ Tested with `redis-benchmark` on Fedora Linux, `cargo run --release`.
 **Key finding:** micro-optimizations (`Bytes`, `Cow`, `BytesMut`) gave ~0% throughput gain.
 Pipelining gave **14x improvement**. Flamegraph showed ~33% of time spent in kernel TCP (`sendto`) — application code was not the bottleneck.
 
-```
-
 ## Roadmap
 
 - [x] Phase 1 — TCP + RESP parser
@@ -51,4 +49,7 @@ Pipelining gave **14x improvement**. Flamegraph showed ~33% of time spent in ker
 - [Tokio](https://tokio.rs) — async runtime
 - [DashMap](https://github.com/xacrimon/dashmap) — concurrent HashMap
 - [bytes](https://docs.rs/bytes) — zero-copy byte buffers
+
+```
+
 ```
