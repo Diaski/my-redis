@@ -1,79 +1,93 @@
 use crate::server::types::RedisError;
-use bytes::Bytes;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::net::tcp::OwnedReadHalf;
+use bytes::{Buf, Bytes, BytesMut};
 
 const MAX_VALUE_SIZE: usize = 512 * 1024;
 
 pub struct CommandParser;
 
 impl CommandParser {
-    pub async fn parse_commands(
-        reader: &mut BufReader<OwnedReadHalf>,
-    ) -> Result<Vec<Vec<Bytes>>, RedisError> {
+    pub fn parse_commands(buf: &mut BytesMut) -> Vec<Vec<Bytes>> {
         let mut commands = Vec::new();
-        let mut line = String::new();
-
-        match Self::parse_single(reader, &mut line).await {
-            Ok(cmd) => commands.push(cmd),
-            Err(RedisError::Protocol(ref s)) if s == "EOF" => return Ok(commands),
-            Err(e) => return Err(e),
-        }
 
         loop {
-            if reader.buffer().is_empty() {
-                break;
-            }
-            match Self::parse_single(reader, &mut line).await {
+            match Self::parse_single(buf) {
                 Ok(cmd) => commands.push(cmd),
-                Err(RedisError::Protocol(ref s)) if s == "EOF" => break,
-                Err(e) => return Err(e),
+                Err(RedisError::Protocol(s)) if s == "INCOMPLETE" => break,
+                Err(e) => {
+                    tracing::error!("Protocol error: {:?}", e);
+                    buf.clear();
+                    break;
+                }
             }
         }
-        Ok(commands)
+        commands
     }
 
-    async fn parse_single(
-        reader: &mut BufReader<OwnedReadHalf>,
-        line: &mut String,
-    ) -> Result<Vec<Bytes>, RedisError> {
-        line.clear();
-        let bytes_read = reader.read_line(line).await.map_err(RedisError::Io)?;
-        if bytes_read == 0 {
-            return Err(RedisError::Protocol("EOF".to_string()));
+    fn parse_single(buf: &mut BytesMut) -> Result<Vec<Bytes>, RedisError> {
+        if buf.is_empty() {
+            return Err(RedisError::Protocol("INCOMPLETE".to_string()));
         }
 
-        let trimmed = line.trim();
-        if !trimmed.starts_with('*') {
-            return Err(RedisError::Protocol(format!("Expected '*', found '{}'", trimmed)));
+        if buf[0] != b'*' {
+            return Err(RedisError::Protocol("Expected '*'".to_string()));
         }
 
-        let n: usize = trimmed[1..]
-            .parse()
-            .map_err(|_| RedisError::Protocol("Invalid number of arguments".to_string()))?;
+        let mut pos = 1;
+        let mut n = 0usize;
+        while pos < buf.len() && buf[pos] != b'\r' {
+            if buf[pos].is_ascii_digit() {
+                n = n * 10 + (buf[pos] - b'0') as usize;
+            } else {
+                return Err(RedisError::Protocol("Invalid count".to_string()));
+            }
+            pos += 1;
+        }
+
+        if pos + 2 > buf.len() {
+            return Err(RedisError::Protocol("INCOMPLETE".to_string()));
+        }
+        let header_end = pos + 2;
 
         let mut args = Vec::with_capacity(n);
+        let mut current_pos = header_end;
+
         for _ in 0..n {
-            line.clear();
-            reader.read_line(line).await.map_err(RedisError::Io)?;
-            let trimmed_arg = line.trim();
-            if !trimmed_arg.starts_with('$') {
+            if current_pos >= buf.len() || buf[current_pos] != b'$' {
                 return Err(RedisError::Protocol("Expected '$'".to_string()));
             }
-            let len: usize = trimmed_arg[1..]
-                .parse()
-                .map_err(|_| RedisError::Protocol("Invalid len".to_string()))?;
+
+            let mut pos_len = current_pos + 1;
+            let mut len = 0usize;
+            while pos_len < buf.len() && buf[pos_len] != b'\r' {
+                if buf[pos_len].is_ascii_digit() {
+                    len = len * 10 + (buf[pos_len] - b'0') as usize;
+                } else {
+                    return Err(RedisError::Protocol("Invalid length".to_string()));
+                }
+                pos_len += 1;
+            }
+
+            if pos_len + 2 > buf.len() {
+                return Err(RedisError::Protocol("INCOMPLETE".to_string()));
+            }
+            let len_end = pos_len + 2;
 
             if len > MAX_VALUE_SIZE {
                 return Err(RedisError::Protocol("Value too large".to_string()));
             }
 
-            let mut value_buf = vec![0u8; len];
-            reader.read_exact(&mut value_buf).await.map_err(RedisError::Io)?;
-            let mut term = [0u8; 2];
-            reader.read_exact(&mut term).await.map_err(RedisError::Io)?;
-            args.push(Bytes::from(value_buf));
+            let data_start = len_end;
+            let data_end = data_start + len;
+            if data_end + 2 > buf.len() {
+                return Err(RedisError::Protocol("INCOMPLETE".to_string()));
+            }
+
+            args.push(Bytes::copy_from_slice(&buf[data_start..data_end]));
+            current_pos = data_end + 2; // Przesuń za dane i \r\n
         }
+
+        buf.advance(current_pos);
+
         Ok(args)
     }
 }

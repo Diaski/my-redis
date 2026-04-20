@@ -7,7 +7,7 @@ use command::CommandParser;
 use dashmap::DashMap;
 use dispatch::CommandRegistry;
 use std::sync::Arc;
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use types::{Storage, Timers};
 
@@ -76,27 +76,37 @@ impl App {
     ) {
         stream.set_nodelay(true).expect("set_nodelay failed");
 
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
+        let (mut reader, mut writer) = stream.into_split();
 
-        let mut response_buf = BytesMut::with_capacity(4096);
+        let mut read_buf = BytesMut::with_capacity(16384);
 
         loop {
-            match CommandParser::parse_commands(&mut reader).await {
+            let mut tmp_buf = vec![0u8; 8192];
+            let n = match reader.read(&mut tmp_buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
                 Err(e) => {
-                    tracing::error!("Parsing error: {:?}", e);
+                    tracing::error!("Read error: {:?}", e);
                     break;
                 }
-                Ok(commands) => {
-                    response_buf.clear();
-                    for args in commands {
-                        let response = registry.handle(&args, &storage, &timers);
-                        response_buf.extend_from_slice(&response);
-                    }
-                    if writer.write_all(&response_buf).await.is_err() {
-                        break;
-                    }
-                }
+            };
+
+            read_buf.extend_from_slice(&tmp_buf[..n]);
+
+            let commands = CommandParser::parse_commands(&mut read_buf);
+
+            if commands.is_empty() {
+                continue;
+            }
+
+            let mut response_buf = BytesMut::with_capacity(4096);
+            for args in commands {
+                let response = registry.handle(&args, &storage, &timers);
+                response_buf.extend_from_slice(&response);
+            }
+
+            if writer.write_all(&response_buf).await.is_err() {
+                break;
             }
         }
     }
