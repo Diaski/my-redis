@@ -6,7 +6,7 @@ const MAX_VALUE_SIZE: usize = 512 * 1024;
 pub struct CommandParser;
 
 impl CommandParser {
-    pub fn parse_commands(buf: &mut BytesMut) -> Vec<Vec<Bytes>> {
+    pub fn parse_commands(buf: &mut BytesMut) -> Result<Vec<Vec<Bytes>>, RedisError> {
         let mut commands = Vec::new();
 
         loop {
@@ -14,13 +14,11 @@ impl CommandParser {
                 Ok(cmd) => commands.push(cmd),
                 Err(RedisError::Protocol(s)) if s == "INCOMPLETE" => break,
                 Err(e) => {
-                    tracing::error!("Protocol error: {:?}", e);
-                    buf.clear();
-                    break;
+                    return Err(e);
                 }
             }
         }
-        commands
+        Ok(commands)
     }
 
     fn parse_single(buf: &mut BytesMut) -> Result<Vec<Bytes>, RedisError> {
@@ -52,7 +50,10 @@ impl CommandParser {
         let mut current_pos = header_end;
 
         for _ in 0..n {
-            if current_pos >= buf.len() || buf[current_pos] != b'$' {
+            if current_pos >= buf.len() {
+                return Err(RedisError::Protocol("INCOMPLETE".to_string()));
+            }
+            if buf[current_pos] != b'$' {
                 return Err(RedisError::Protocol("Expected '$'".to_string()));
             }
 
@@ -87,7 +88,6 @@ impl CommandParser {
         }
 
         buf.advance(current_pos);
-
         Ok(args)
     }
 }

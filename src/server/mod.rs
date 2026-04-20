@@ -79,34 +79,48 @@ impl App {
         let (mut reader, mut writer) = stream.into_split();
 
         let mut read_buf = BytesMut::with_capacity(16384);
-
+        let mut response_buf = BytesMut::with_capacity(4096);
         loop {
-            let mut tmp_buf = vec![0u8; 8192];
-            let n = match reader.read(&mut tmp_buf).await {
+            read_buf.reserve(8192);
+            match reader.read_buf(&mut read_buf).await {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(e) => {
+                    if let Some(io_err) = e.raw_os_error()
+                        && io_err == 104
+                    {
+                        tracing::debug!("Client reset connection");
+                        break;
+                    }
+
                     tracing::error!("Read error: {:?}", e);
                     break;
                 }
             };
 
-            read_buf.extend_from_slice(&tmp_buf[..n]);
+            match CommandParser::parse_commands(&mut read_buf) {
+                Ok(commands) => {
+                    if commands.is_empty() {
+                        continue;
+                    }
 
-            let commands = CommandParser::parse_commands(&mut read_buf);
+                    response_buf.clear();
+                    for args in commands {
+                        let response = registry.handle(&args, &storage, &timers);
+                        response_buf.extend_from_slice(&response);
+                    }
 
-            if commands.is_empty() {
-                continue;
-            }
-
-            let mut response_buf = BytesMut::with_capacity(4096);
-            for args in commands {
-                let response = registry.handle(&args, &storage, &timers);
-                response_buf.extend_from_slice(&response);
-            }
-
-            if writer.write_all(&response_buf).await.is_err() {
-                break;
+                    if writer.write_all(&response_buf).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Fatal protocol error from client: {:?}. Closing connection.",
+                        e
+                    );
+                    break;
+                }
             }
         }
     }
