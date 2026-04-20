@@ -83,7 +83,7 @@ impl CommandParser {
             }
 
             args.push(Bytes::copy_from_slice(&buf[data_start..data_end]));
-            current_pos = data_end + 2; // Przesuń za dane i \r\n
+            current_pos = data_end + 2;
         }
 
         buf.advance(current_pos);
