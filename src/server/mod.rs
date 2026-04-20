@@ -1,18 +1,21 @@
 mod command;
 mod dispatch;
 mod types;
-use bytes::Bytes;
-use bytes::BytesMut;
-use command::Command;
+
+use bytes::{Bytes, BytesMut};
+use command::CommandParser;
 use dashmap::DashMap;
-use dispatch::Dispatch;
+use dispatch::CommandRegistry;
+use std::sync::Arc;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use types::{Storage, Timers};
+
 pub struct App {
     listener: TcpListener,
     storage: Storage,
     timers: Timers,
+    registry: Arc<CommandRegistry>,
 }
 
 impl App {
@@ -20,12 +23,14 @@ impl App {
         let listener = TcpListener::bind(addr).await?;
         let storage = Storage::new(DashMap::new());
         let timers = Timers::new(DashMap::new());
-        Ok(App { listener, storage, timers })
+        let registry = Arc::new(CommandRegistry::new());
+        Ok(App { listener, storage, timers, registry })
     }
 
     pub fn local_addr(&self) -> std::net::SocketAddr {
         self.listener.local_addr().unwrap()
     }
+
     fn expire_keys_loop(storage: Storage, timers: Timers) {
         let now = std::time::Instant::now();
         let expired_keys: Vec<Bytes> = timers
@@ -36,12 +41,12 @@ impl App {
                 },
             )
             .collect();
-
         for key in expired_keys {
             storage.remove(&key);
             timers.remove(&key);
         }
     }
+
     pub async fn run(self) {
         let storage_bg = self.storage.clone();
         let timers_bg = self.timers.clone();
@@ -56,26 +61,36 @@ impl App {
         while let Ok((stream, _addr)) = self.listener.accept().await {
             let storage = self.storage.clone();
             let timers = self.timers.clone();
+            let registry = self.registry.clone();
             tokio::spawn(async move {
-                Self::server_loop(stream, storage, timers).await;
+                Self::server_loop(stream, storage, timers, registry).await;
             });
         }
     }
 
-    async fn server_loop(stream: TcpStream, storage: Storage, timers: Timers) {
+    async fn server_loop(
+        stream: TcpStream,
+        storage: Storage,
+        timers: Timers,
+        registry: Arc<CommandRegistry>,
+    ) {
+        stream.set_nodelay(true).expect("set_nodelay failed");
+
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
+        let mut response_buf = BytesMut::with_capacity(4096);
+
         loop {
-            match Command::parse_commands(&mut reader).await {
-                None => {
+            match CommandParser::parse_commands(&mut reader).await {
+                Err(e) => {
+                    tracing::error!("Parsing error: {:?}", e);
                     break;
                 }
-                Some(commands) => {
-                    let mut response_buf = BytesMut::new();
+                Ok(commands) => {
+                    response_buf.clear();
                     for args in commands {
-                        let cmd = Command::from_args(args);
-                        let response = Dispatch::dispatch(cmd, &storage, &timers);
+                        let response = registry.handle(&args, &storage, &timers);
                         response_buf.extend_from_slice(&response);
                     }
                     if writer.write_all(&response_buf).await.is_err() {

@@ -23,3 +23,8 @@ debug = true
 tokio = { version = "1.52.0", features = ["full"] }
 dashmap = "6"
 bytes = "1"
+nom = "8"
+thiserror = "2"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+mimalloc = "0.1.49"

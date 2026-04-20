@@ -1,92 +1,79 @@
+use crate::server::types::RedisError;
 use bytes::Bytes;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::tcp::OwnedReadHalf;
 
-pub enum Command {
-    Ping,
-    Get { key: Bytes },
-    Set { key: Bytes, value: Bytes },
-    Del { key: Bytes },
-    Exists { key: Bytes },
-    Expire { key: Bytes, seconds: u64 },
-    Ttl { key: Bytes },
-    Unknown(Bytes),
-}
+const MAX_VALUE_SIZE: usize = 512 * 1024;
 
-impl Command {
-    pub fn from_args(args: Vec<Bytes>) -> Self {
-        if args.is_empty() {
-            return Command::Unknown(Bytes::from("empty command"));
-        }
+pub struct CommandParser;
 
-        let cmd = std::str::from_utf8(&args[0]).unwrap_or("").to_ascii_uppercase();
-
-        match cmd.as_str() {
-            "PING" => Command::Ping,
-            "SET" => {
-                if args.len() < 3 {
-                    Command::Unknown(Bytes::from("wrong number of arguments for 'set' command"))
-                } else {
-                    Command::Set { key: args[1].clone(), value: args[2].clone() }
-                }
-            }
-            "GET" => {
-                if args.len() < 2 {
-                    Command::Unknown(Bytes::from("wrong number of arguments for 'get' command"))
-                } else {
-                    Command::Get { key: args[1].clone() }
-                }
-            }
-            "DEL" => Command::Del { key: args[1].clone() },
-            "EXISTS" => Command::Exists { key: args[1].clone() },
-            "EXPIRE" => {
-                if args.len() < 3 {
-                    Command::Unknown(Bytes::from("wrong number of arguments for 'expire' command"))
-                } else {
-                    let seconds = std::str::from_utf8(&args[2]).unwrap_or("0").parse().unwrap_or(0);
-                    Command::Expire { key: args[1].clone(), seconds }
-                }
-            }
-            "TTL" => Command::Ttl { key: args[1].clone() },
-            other => Command::Unknown(Bytes::copy_from_slice(other.as_bytes())),
-        }
-    }
-
-    pub async fn parse_commands(reader: &mut BufReader<OwnedReadHalf>) -> Option<Vec<Vec<Bytes>>> {
+impl CommandParser {
+    pub async fn parse_commands(
+        reader: &mut BufReader<OwnedReadHalf>,
+    ) -> Result<Vec<Vec<Bytes>>, RedisError> {
         let mut commands = Vec::new();
-        let mut buf = String::with_capacity(256);
-        let first = Self::parse_single(reader, &mut buf).await?;
-        commands.push(first);
+        let mut line = String::new();
+
+        match Self::parse_single(reader, &mut line).await {
+            Ok(cmd) => commands.push(cmd),
+            Err(RedisError::Protocol(ref s)) if s == "EOF" => return Ok(commands),
+            Err(e) => return Err(e),
+        }
+
         loop {
             if reader.buffer().is_empty() {
                 break;
             }
-            match Self::parse_single(reader, &mut buf).await {
-                Some(cmd) => commands.push(cmd),
-                None => break,
+            match Self::parse_single(reader, &mut line).await {
+                Ok(cmd) => commands.push(cmd),
+                Err(RedisError::Protocol(ref s)) if s == "EOF" => break,
+                Err(e) => return Err(e),
             }
         }
-
-        Some(commands)
+        Ok(commands)
     }
 
     async fn parse_single(
         reader: &mut BufReader<OwnedReadHalf>,
-        buf: &mut String,
-    ) -> Option<Vec<Bytes>> {
-        buf.clear();
-        reader.read_line(buf).await.ok()?;
-        let n: usize = buf.trim().strip_prefix('*')?.parse().ok()?;
+        line: &mut String,
+    ) -> Result<Vec<Bytes>, RedisError> {
+        line.clear();
+        let bytes_read = reader.read_line(line).await.map_err(RedisError::Io)?;
+        if bytes_read == 0 {
+            return Err(RedisError::Protocol("EOF".to_string()));
+        }
+
+        let trimmed = line.trim();
+        if !trimmed.starts_with('*') {
+            return Err(RedisError::Protocol(format!("Expected '*', found '{}'", trimmed)));
+        }
+
+        let n: usize = trimmed[1..]
+            .parse()
+            .map_err(|_| RedisError::Protocol("Invalid number of arguments".to_string()))?;
 
         let mut args = Vec::with_capacity(n);
         for _ in 0..n {
-            buf.clear();
-            reader.read_line(buf).await.ok()?;
-            buf.clear();
-            reader.read_line(buf).await.ok()?;
-            args.push(Bytes::copy_from_slice(buf.trim().as_bytes()));
-        }
+            line.clear();
+            reader.read_line(line).await.map_err(RedisError::Io)?;
+            let trimmed_arg = line.trim();
+            if !trimmed_arg.starts_with('$') {
+                return Err(RedisError::Protocol("Expected '$'".to_string()));
+            }
+            let len: usize = trimmed_arg[1..]
+                .parse()
+                .map_err(|_| RedisError::Protocol("Invalid len".to_string()))?;
 
-        Some(args)
+            if len > MAX_VALUE_SIZE {
+                return Err(RedisError::Protocol("Value too large".to_string()));
+            }
+
+            let mut value_buf = vec![0u8; len];
+            reader.read_exact(&mut value_buf).await.map_err(RedisError::Io)?;
+            let mut term = [0u8; 2];
+            reader.read_exact(&mut term).await.map_err(RedisError::Io)?;
+            args.push(Bytes::from(value_buf));
+        }
+        Ok(args)
     }
 }
