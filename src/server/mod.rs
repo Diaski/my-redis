@@ -21,8 +21,8 @@ pub struct App {
 impl App {
     pub async fn new(addr: String) -> Result<Self, std::io::Error> {
         let listener = TcpListener::bind(addr).await?;
-        let storage = Storage::new(DashMap::new());
-        let timers = Timers::new(DashMap::new());
+        let storage = Storage::new(DashMap::with_capacity(1_000_000));
+        let timers = Timers::new(DashMap::with_capacity(1_000_000));
         let registry = Arc::new(CommandRegistry::new());
         Ok(App { listener, storage, timers, registry })
     }

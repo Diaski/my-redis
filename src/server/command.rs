@@ -27,7 +27,21 @@ impl CommandParser {
         }
 
         if buf[0] != b'*' {
-            return Err(RedisError::Protocol("Expected '*'".to_string()));
+            let end = buf
+                .iter()
+                .position(|&b| b == b'\r')
+                .ok_or(RedisError::Protocol("INCOMPLETE".to_string()))?;
+
+            let line = std::str::from_utf8(&buf[..end])
+                .map_err(|_| RedisError::Protocol("Invalid UTF-8".to_string()))?;
+
+            let args: Vec<Bytes> = line
+                .split_ascii_whitespace()
+                .map(|s| Bytes::copy_from_slice(s.as_bytes()))
+                .collect();
+
+            buf.advance(end + 2);
+            return Ok(args);
         }
 
         let mut pos = 1;
